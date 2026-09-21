@@ -1,0 +1,291 @@
+//@version=6
+indicator("Futures Risk Box — Apex Edition V5.3", overlay = true, max_lines_count = 50, max_boxes_count = 20, max_labels_count = 20)
+
+// =====================
+// Inputs
+// =====================
+
+direction = input.string("Long", "Direction", options = ["Long", "Short"])
+
+displayMode = input.string(
+     "Compact",
+     "Display Mode",
+     options = ["Compact", "Full", "Minimal"]
+)
+
+labelPosition = input.string(
+     "Center",
+     "Label Position",
+     options = ["Left", "Center", "Right"]
+)
+
+outsideLabelOffset = input.float(0.15, "Outside Label Offset", minval = 0.05, maxval = 1.0, step = 0.05)
+
+contractMode = input.string(
+     "Auto micro from chart",
+     "Contract mode",
+     options = ["Auto micro from chart", "Manual"]
+)
+
+manualContract = input.string(
+     "MNQ",
+     "Manual contract",
+     options = ["ES", "MES", "NQ", "MNQ", "YM", "MYM", "GC", "MGC", "RTY", "M2K", "CL", "MCL"]
+)
+
+qty = input.float(1, "Current contracts / micros", minval = 0.01, step = 1)
+
+preferredRisk = input.float(300, "Preferred Risk $", minval = 0)
+hardRiskLimit = input.float(350, "Hard Risk Limit $", minval = 0)
+preferredRR = input.float(2.0, "Preferred Minimum R/R", minval = 0)
+
+showBoxes = input.bool(true, "Show Risk/Reward Boxes")
+
+// =====================
+// Interactive chart points
+// Click order:
+// 1. Entry
+// 2. Stop / invalidation
+// 3. Target
+// =====================
+
+entryTime = input.time(defval = timestamp("01 Jan 2026 00:00 +0000"), title = "1 ENTRY time", inline = "ENTRY", confirm = true)
+entryPrice = input.price(defval = 0.0, title = "1 ENTRY price", inline = "ENTRY", confirm = true)
+
+stopTime = input.time(defval = timestamp("01 Jan 2026 00:00 +0000"), title = "2 STOP time", inline = "STOP", confirm = true)
+stopPrice = input.price(defval = 0.0, title = "2 STOP / invalidation price", inline = "STOP", confirm = true)
+
+targetTime = input.time(defval = timestamp("01 Jan 2026 00:00 +0000"), title = "3 TARGET time", inline = "TARGET", confirm = true)
+targetPrice = input.price(defval = 0.0, title = "3 TARGET price", inline = "TARGET", confirm = true)
+
+// =====================
+// Auto micro detection
+// =====================
+
+symbolText = syminfo.root + " " + syminfo.ticker
+
+autoMicroContract =
+     str.contains(symbolText, "MES") ? "MES" :
+     str.contains(symbolText, "ES") ? "MES" :
+     str.contains(symbolText, "MNQ") ? "MNQ" :
+     str.contains(symbolText, "NQ") ? "MNQ" :
+     str.contains(symbolText, "MYM") ? "MYM" :
+     str.contains(symbolText, "YM") ? "MYM" :
+     str.contains(symbolText, "MGC") ? "MGC" :
+     str.contains(symbolText, "GC") ? "MGC" :
+     str.contains(symbolText, "M2K") ? "M2K" :
+     str.contains(symbolText, "RTY") ? "M2K" :
+     str.contains(symbolText, "MCL") ? "MCL" :
+     str.contains(symbolText, "CL") ? "MCL" :
+     "MNQ"
+
+contractType = contractMode == "Manual" ? manualContract : autoMicroContract
+
+// =====================
+// Contract point values
+// =====================
+
+pointValue = switch contractType
+    "ES" => 50.0
+    "MES" => 5.0
+    "NQ" => 20.0
+    "MNQ" => 2.0
+    "YM" => 5.0
+    "MYM" => 0.5
+    "GC" => 100.0
+    "MGC" => 10.0
+    "RTY" => 50.0
+    "M2K" => 5.0
+    "CL" => 1000.0
+    "MCL" => 100.0
+    => 2.0
+
+contractLabel = contractMode == "Auto micro from chart" ? contractType + " / Auto micro" : contractType + " / Manual"
+shortContractLabel = contractType
+
+// =====================
+// Calculations
+// =====================
+
+isLong = direction == "Long"
+
+validStructure = isLong ? stopPrice < entryPrice and targetPrice > entryPrice : stopPrice > entryPrice and targetPrice < entryPrice
+
+riskPts = math.abs(entryPrice - stopPrice)
+rewardPts = math.abs(targetPrice - entryPrice)
+
+riskPerOne = riskPts * pointValue
+rewardPerOne = rewardPts * pointValue
+
+riskDollars = riskPerOne * qty
+rewardDollars = rewardPerOne * qty
+rr = riskDollars > 0 ? rewardDollars / riskDollars : na
+
+suggestedQty = riskPerOne > 0 ? math.floor(preferredRisk / riskPerOne) : na
+suggestedRisk = riskPerOne * suggestedQty
+
+maxHardQty = riskPerOne > 0 ? math.floor(hardRiskLimit / riskPerOne) : na
+oneContractRisk = riskPerOne
+
+riskStatus = not validStructure ? "INVALID STRUCTURE" : riskDollars > hardRiskLimit ? "NO TRADE — HARD RISK" : riskDollars > preferredRisk ? "CAUTION — ABOVE PREF" : "VALID"
+rrStatus = not validStructure ? "INVALID" : rr < preferredRR ? "LOW R/R" : "GOOD R/R"
+
+suggestedStatusFull = not validStructure ? "Invalid structure" : suggestedQty < 1 ? "Suggested: 0 — wait / better entry" : "Suggested: " + str.tostring(suggestedQty, "#") + " @ $" + str.tostring(suggestedRisk, "#.##")
+suggestedStatusCompact = not validStructure ? "Invalid" : suggestedQty < 1 ? "Suggested: 0" : "Suggested: " + str.tostring(suggestedQty, "#")
+
+hardStatus = not validStructure ? "" : maxHardQty < 1 ? "Max hard qty: 0 — no trade" : "Max hard qty: " + str.tostring(maxHardQty, "#")
+
+rightTime = math.max(math.max(entryTime, stopTime), targetTime)
+leftTime = math.min(math.min(entryTime, stopTime), targetTime)
+
+timeSpan = math.max(rightTime - leftTime, 1)
+
+// Left and Right are placed OUTSIDE the colored trade box.
+// outsideLabelOffset controls how far outside.
+// 0.15 = 15% of the tool width outside the box.
+leftLabelTime = int(math.round(leftTime - timeSpan * outsideLabelOffset))
+centerLabelTime = int(math.round((leftTime + rightTime) / 2))
+rightLabelTime = int(math.round(rightTime + timeSpan * outsideLabelOffset))
+
+labelTime = labelPosition == "Left" ? leftLabelTime : labelPosition == "Right" ? rightLabelTime : centerLabelTime
+
+rewardTop = isLong ? targetPrice : entryPrice
+rewardBottom = isLong ? entryPrice : targetPrice
+
+riskTop = isLong ? entryPrice : stopPrice
+riskBottom = isLong ? stopPrice : entryPrice
+
+labelColor =
+     not validStructure ? color.new(color.red, 0) :
+     riskDollars > hardRiskLimit ? color.new(color.red, 0) :
+     riskDollars > preferredRisk ? color.new(color.orange, 0) :
+     color.new(color.blue, 0)
+
+// =====================
+// Display mode logic
+// =====================
+
+showFull = displayMode == "Full"
+showCompact = displayMode == "Compact"
+
+showTargetStopLabels = showFull or showCompact
+showEntryLabel = showFull
+showDecisionLabel = showFull or showCompact
+
+targetText = "Target: " + str.tostring(rewardPts, "#.##") + " pts | $" + str.tostring(rewardDollars, "#.##")
+stopText = "Stop: " + str.tostring(riskPts, "#.##") + " pts | $" + str.tostring(riskDollars, "#.##")
+entryText = "Entry: " + str.tostring(entryPrice, format.mintick)
+
+decisionTextFull =
+     contractLabel + " x" + str.tostring(qty, "#.##") +
+     "\nCurrent risk: $" + str.tostring(riskDollars, "#.##") +
+     " | Reward: $" + str.tostring(rewardDollars, "#.##") +
+     "\nR/R: " + str.tostring(rr, "#.##") +
+     "\n" + riskStatus + " | " + rrStatus +
+     "\n" + suggestedStatusFull +
+     "\n1 con risk: $" + str.tostring(oneContractRisk, "#.##") +
+     " | " + hardStatus
+
+decisionTextCompact =
+     shortContractLabel + " x" + str.tostring(qty, "#.##") +
+     "\nR/R: " + str.tostring(rr, "#.##") + " | " + riskStatus +
+     "\n" + suggestedStatusCompact
+
+decisionText = showFull ? decisionTextFull : decisionTextCompact
+
+// =====================
+// Label placement
+// =====================
+
+targetLabelY = targetPrice
+stopLabelY = stopPrice
+decisionLabelY = entryPrice
+
+// =====================
+// Visual objects
+// =====================
+
+var box rewardBox = na
+var box riskBox = na
+
+var line entryLine = na
+var line stopLine = na
+var line targetLine = na
+
+var label entryLbl = na
+var label stopLbl = na
+var label targetLbl = na
+var label midLbl = na
+
+if barstate.islast
+    if not na(rewardBox)
+        box.delete(rewardBox)
+    if not na(riskBox)
+        box.delete(riskBox)
+
+    if not na(entryLine)
+        line.delete(entryLine)
+    if not na(stopLine)
+        line.delete(stopLine)
+    if not na(targetLine)
+        line.delete(targetLine)
+
+    if not na(entryLbl)
+        label.delete(entryLbl)
+    if not na(stopLbl)
+        label.delete(stopLbl)
+    if not na(targetLbl)
+        label.delete(targetLbl)
+    if not na(midLbl)
+        label.delete(midLbl)
+
+    if showBoxes and validStructure
+        rewardBox := box.new(left = entryTime, top = rewardTop, right = rightTime, bottom = rewardBottom, xloc = xloc.bar_time, bgcolor = color.new(color.green, 82), border_color = color.new(color.green, 35))
+        riskBox := box.new(left = entryTime, top = riskTop, right = rightTime, bottom = riskBottom, xloc = xloc.bar_time, bgcolor = color.new(color.red, 82), border_color = color.new(color.red, 35))
+
+    entryLine := line.new(x1 = entryTime, y1 = entryPrice, x2 = rightTime, y2 = entryPrice, xloc = xloc.bar_time, color = color.gray, width = 2)
+    stopLine := line.new(x1 = entryTime, y1 = stopPrice, x2 = rightTime, y2 = stopPrice, xloc = xloc.bar_time, color = color.red, width = 2)
+    targetLine := line.new(x1 = entryTime, y1 = targetPrice, x2 = rightTime, y2 = targetPrice, xloc = xloc.bar_time, color = color.green, width = 2)
+
+    if showTargetStopLabels
+        targetLbl := label.new(
+             x = labelTime,
+             y = targetLabelY,
+             text = targetText,
+             xloc = xloc.bar_time,
+             style = label.style_label_down,
+             textcolor = color.white,
+             color = color.green
+        )
+
+        stopLbl := label.new(
+             x = labelTime,
+             y = stopLabelY,
+             text = stopText,
+             xloc = xloc.bar_time,
+             style = label.style_label_up,
+             textcolor = color.white,
+             color = color.red
+        )
+
+    if showEntryLabel
+        entryLbl := label.new(
+             x = labelTime,
+             y = entryPrice,
+             text = entryText,
+             xloc = xloc.bar_time,
+             style = label.style_label_center,
+             textcolor = color.white,
+             color = color.gray
+        )
+
+    if showDecisionLabel
+        midLbl := label.new(
+             x = labelTime,
+             y = decisionLabelY,
+             text = decisionText,
+             xloc = xloc.bar_time,
+             style = label.style_label_center,
+             textcolor = color.white,
+             color = labelColor
+        )
